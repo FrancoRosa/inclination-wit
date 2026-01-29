@@ -5,8 +5,6 @@ import { Server } from "socket.io";
 import { exec } from "child_process";
 import { promisify } from "util";
 
-const execPromise = promisify(exec);
-
 const server = createServer();
 const io = new Server(server, {
   cors: {
@@ -88,11 +86,11 @@ async function testPort(portPath) {
  * Auto-detect the correct USB port with the sensor
  */
 async function detectSensorPort() {
-  console.log("🔍 Detecting inclination sensor...");
+  console.log("Detecting inclination sensor...");
   const availablePorts = await listSerialPorts();
 
   if (availablePorts.length === 0) {
-    console.warn("⚠️  No USB serial ports found. Retrying in 5 seconds...");
+    console.warn("No USB serial ports found. Retrying in 5 seconds...");
     return null;
   }
 
@@ -109,7 +107,7 @@ async function detectSensorPort() {
     }
   }
 
-  console.warn("⚠️  No inclination sensor detected. Retrying in 5 seconds...");
+  console.warn("No inclination sensor detected. Retrying in 5 seconds...");
   return null;
 }
 
@@ -136,7 +134,7 @@ async function connectToSensor() {
     port.on("open", () => {
       isConnected = true;
       reconnectAttempts = 0;
-      console.log(`📡 Connected to sensor on ${detectedPort}`);
+      console.log(`Connected to sensor on ${detectedPort}`);
       io.emit("status", { connected: true, port: detectedPort });
     });
 
@@ -146,7 +144,7 @@ async function connectToSensor() {
     });
 
     port.on("error", (error) => {
-      console.error(`❌ Port error: ${error.message}`);
+      console.error(`Port error: ${error.message}`);
       handleDisconnect();
     });
 
@@ -166,7 +164,7 @@ function handleDisconnect() {
   if (!isConnected) return; // Already disconnected
 
   isConnected = false;
-  console.log("⚠️  Sensor disconnected. Searching for sensor...");
+  console.log("Sensor disconnected. Searching for sensor...");
   io.emit("status", { connected: false, port: null });
 
   // Clean up existing connections
@@ -182,7 +180,7 @@ function handleDisconnect() {
 
   if (reconnectAttempts > MAX_RECONNECT_ATTEMPTS) {
     console.log(
-      `❌ Max reconnection attempts (${MAX_RECONNECT_ATTEMPTS}) reached.`,
+      `Max reconnection attempts (${MAX_RECONNECT_ATTEMPTS}) reached.`,
     );
     // Full reset after max attempts
     reconnectAttempts = 0;
@@ -195,13 +193,13 @@ function handleDisconnect() {
 
 // Display 5 times per second
 setInterval(() => {
-  if (latestData) {
+  if (latestData && isConnected) {
     console.log(
-      `📊 Roll: ${latestData.roll.toFixed(2)}°, Pitch: ${latestData.pitch.toFixed(2)}°, Yaw: ${latestData.yaw.toFixed(2)}°`,
+      `Roll: ${latestData.roll.toFixed(2)}°, Pitch: ${latestData.pitch.toFixed(2)}°, Yaw: ${latestData.yaw.toFixed(2)}°`,
     );
   }
-}, 200);
+}, 5000);
 
 // Start the connection
-console.log("🚀 Inclination sensor server starting on port 10001");
+console.log("Inclination sensor server starting on port 10001");
 connectToSensor();

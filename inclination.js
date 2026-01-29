@@ -38,7 +38,6 @@ export class InclinationParser extends Transform {
         const pitch = (((packet[5] << 8) | packet[4]) / 32768) * 180;
         const yaw = (((packet[7] << 8) | packet[6]) / 32768) * 180;
         const version = (packet[9] << 8) | packet[8];
-
         this.push({ roll, pitch, yaw, version });
       }
       // Else discard invalid packet

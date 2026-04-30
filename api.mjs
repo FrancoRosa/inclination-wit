@@ -112,7 +112,6 @@ async function detectSensorPort() {
  * Connect to the sensor port
  */
 
-let countf = 0;
 let count = 0;
 let maxAcc = 0;
 let avrAcc = 0;
@@ -149,7 +148,6 @@ async function connectToSensor() {
       if (count >= 20) {
         const payload = { ...data, maxAcc, avrAcc: avrAcc / 20 };
         io.emit("inclination", payload);
-        console.log(payload);
         maxAcc = 0;
         avrAcc = 0;
         count = 0;

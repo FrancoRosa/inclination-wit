@@ -2,8 +2,6 @@ import { SerialPort } from "serialport";
 import { InclinationParser } from "./inclination.js";
 import { createServer } from "http";
 import { Server } from "socket.io";
-import { exec } from "child_process";
-import { promisify } from "util";
 
 const server = createServer();
 const io = new Server(server, {
@@ -15,7 +13,6 @@ const io = new Server(server, {
 
 server.listen(10001);
 
-let latestData = null;
 let port = null;
 let parser = null;
 let isConnected = false;
@@ -50,7 +47,7 @@ async function testPort(portPath) {
     let packetReceived = false;
 
     try {
-      testPort = new SerialPort({ path: portPath, baudRate: 9600 });
+      testPort = new SerialPort({ path: portPath, baudRate: 115200 });
 
       timeoutId = setTimeout(() => {
         if (testPort && testPort.isOpen) {
@@ -114,6 +111,11 @@ async function detectSensorPort() {
 /**
  * Connect to the sensor port
  */
+
+let countf = 0;
+let count = 0;
+let maxAcc = 0;
+let avrAcc = 0;
 async function connectToSensor() {
   const detectedPort = await detectSensorPort();
 
@@ -126,7 +128,7 @@ async function connectToSensor() {
   try {
     port = new SerialPort({
       path: detectedPort,
-      baudRate: 9600,
+      baudRate: 115200,
     });
 
     parser = port.pipe(new InclinationParser());
@@ -139,8 +141,19 @@ async function connectToSensor() {
     });
 
     parser.on("data", (data) => {
-      latestData = data;
-      io.emit("inclination", data);
+      const { accX, accY, accZ } = data;
+      const magAcc = Math.sqrt(accX ** 2 + accY ** 2 + accZ ** 2);
+      maxAcc = Math.max(magAcc, maxAcc);
+      avrAcc = magAcc + avrAcc;
+      count++;
+      if (count >= 20) {
+        const payload = { ...data, maxAcc, avrAcc: avrAcc / 20 };
+        io.emit("inclination", payload);
+        console.log(payload);
+        maxAcc = 0;
+        avrAcc = 0;
+        count = 0;
+      }
     });
 
     port.on("error", (error) => {
@@ -190,15 +203,6 @@ function handleDisconnect() {
     setTimeout(connectToSensor, RECONNECT_DELAY);
   }
 }
-
-// Display 5 times per second
-setInterval(() => {
-  if (latestData && isConnected) {
-    console.log(
-      `Roll: ${latestData.roll.toFixed(2)}°, Pitch: ${latestData.pitch.toFixed(2)}°, Yaw: ${latestData.yaw.toFixed(2)}°`,
-    );
-  }
-}, 5000);
 
 // Start the connection
 console.log("Inclination sensor server starting on port 10001");

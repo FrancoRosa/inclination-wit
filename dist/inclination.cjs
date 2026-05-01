@@ -416,13 +416,13 @@ var require_mediaType = __commonJS({
       return spec.q > 0;
     }
     function quoteCount(string) {
-      var count = 0;
+      var count2 = 0;
       var index = 0;
       while ((index = string.indexOf('"', index)) !== -1) {
-        count++;
+        count2++;
         index++;
       }
-      return count;
+      return count2;
     }
     function splitKeyValuePair(str) {
       var index = str.indexOf("=");
@@ -9426,11 +9426,11 @@ var require_cjs = __commonJS({
     var encodePayload = (packets, callback) => {
       const length = packets.length;
       const encodedPackets = new Array(length);
-      let count = 0;
+      let count2 = 0;
       packets.forEach((packet, i) => {
         (0, encodePacket_js_1.encodePacket)(packet, false, (encodedPacket) => {
           encodedPackets[i] = encodedPacket;
-          if (++count === length) {
+          if (++count2 === length) {
             callback(encodedPackets.join(SEPARATOR));
           }
         });
@@ -9890,11 +9890,11 @@ var require_parser_v3 = __commonJS({
     }
     function map(ary, each, done) {
       const results = new Array(ary.length);
-      let count = 0;
+      let count2 = 0;
       for (let i = 0; i < ary.length; i++) {
         each(ary[i], (error, msg) => {
           results[i] = msg;
-          if (++count === ary.length) {
+          if (++count2 === ary.length) {
             done(null, results);
           }
         });
@@ -22474,11 +22474,12 @@ var InclinationParser = class extends import_stream.Transform {
   constructor(options = {}) {
     super({ ...options, objectMode: true });
     this.buffer = Buffer.alloc(0);
+    this.currentData = {};
   }
   _transform(chunk, encoding, callback) {
     this.buffer = Buffer.concat([this.buffer, chunk]);
     while (this.buffer.length >= 11) {
-      const start = this.buffer.indexOf(Buffer.from([85, 83]));
+      const start = this.buffer.indexOf(85);
       if (start === -1) {
         this.buffer = Buffer.alloc(0);
         break;
@@ -22494,11 +22495,39 @@ var InclinationParser = class extends import_stream.Transform {
       }
       sum &= 255;
       if (sum === packet[10]) {
-        const roll = (packet[3] << 8 | packet[2]) / 32768 * 180;
-        const pitch = (packet[5] << 8 | packet[4]) / 32768 * 180;
-        const yaw = (packet[7] << 8 | packet[6]) / 32768 * 180;
-        const version = packet[9] << 8 | packet[8];
-        this.push({ roll, pitch, yaw, version });
+        const packetType = packet[1];
+        if (packetType === 81) {
+          let rawAccX = packet[3] << 8 | packet[2];
+          let rawAccY = packet[5] << 8 | packet[4];
+          let rawAccZ = packet[7] << 8 | packet[6];
+          rawAccX = rawAccX << 16 >> 16;
+          rawAccY = rawAccY << 16 >> 16;
+          rawAccZ = rawAccZ << 16 >> 16;
+          const accX = rawAccX / 32768 * 16;
+          const accY = rawAccY / 32768 * 16;
+          const accZ = rawAccZ / 32768 * 16;
+          this.currentData.accX = accX;
+          this.currentData.accY = accY;
+          this.currentData.accZ = accZ;
+        } else if (packetType === 83) {
+          const roll = (packet[3] << 8 | packet[2]) / 32768 * 180;
+          const pitch = (packet[5] << 8 | packet[4]) / 32768 * 180;
+          const yaw = (packet[7] << 8 | packet[6]) / 32768 * 180;
+          this.currentData.roll = roll;
+          this.currentData.pitch = pitch;
+          this.currentData.yaw = yaw;
+          if (this.currentData.accX !== void 0 && this.currentData.accY !== void 0 && this.currentData.accZ !== void 0) {
+            this.push({
+              accX: this.currentData.accX,
+              accY: this.currentData.accY,
+              accZ: this.currentData.accZ,
+              roll: this.currentData.roll,
+              pitch: this.currentData.pitch,
+              yaw: this.currentData.yaw
+            });
+            this.currentData = {};
+          }
+        }
       }
     }
     callback();
@@ -22521,7 +22550,6 @@ var io2 = new Server(server, {
   }
 });
 server.listen(10001);
-var latestData = null;
 var port = null;
 var parser = null;
 var isConnected = false;
@@ -22538,13 +22566,48 @@ async function listSerialPorts() {
     return [];
   }
 }
-async function testPort(portPath) {
+async function sendCommand(serialPort, command) {
+  return new Promise((resolve, reject) => {
+    if (!serialPort || !serialPort.isOpen) {
+      reject(new Error("Port not open"));
+      return;
+    }
+    serialPort.write(command, (err) => {
+      if (err) reject(err);
+      else {
+        setTimeout(() => resolve(), 100);
+      }
+    });
+  });
+}
+async function configureSensor(serialPort) {
+  try {
+    console.log(
+      "Configuring sensor for 100Hz acceleration + inclination output..."
+    );
+    await sendCommand(serialPort, Buffer.from([255, 170, 105, 136, 181]));
+    console.log("\u2713 Sensor unlocked");
+    await sendCommand(serialPort, Buffer.from([255, 170, 3, 9, 0]));
+    console.log("\u2713 Output rate set to 100Hz");
+    await sendCommand(serialPort, Buffer.from([255, 170, 2, 10, 0]));
+    console.log("\u2713 Output content set to acceleration + inclination");
+    await sendCommand(serialPort, Buffer.from([255, 170, 4, 6, 0]));
+    console.log("\u2713 Baud rate set to 115200");
+    await sendCommand(serialPort, Buffer.from([255, 170, 0, 0, 0]));
+    console.log("\u2713 Configuration saved");
+    return true;
+  } catch (error) {
+    console.error("\u2717 Configuration error:", error.message);
+    return false;
+  }
+}
+async function testPort(portPath, baudRate = 115200) {
   return new Promise((resolve) => {
     let testPort2;
     let timeoutId;
     let packetReceived = false;
     try {
-      testPort2 = new import_serialport.SerialPort({ path: portPath, baudRate: 9600 });
+      testPort2 = new import_serialport.SerialPort({ path: portPath, baudRate });
       timeoutId = setTimeout(() => {
         if (testPort2 && testPort2.isOpen) {
           testPort2.close();
@@ -22572,7 +22635,7 @@ async function testPort(portPath) {
   });
 }
 async function detectSensorPort() {
-  console.log("Detecting inclination sensor...");
+  console.log("Detecting inclination sensor at 115200 baud...");
   const availablePorts = await listSerialPorts();
   if (availablePorts.length === 0) {
     console.warn("No USB serial ports found. Retrying in 5 seconds...");
@@ -22582,16 +22645,73 @@ async function detectSensorPort() {
     `Found ${availablePorts.length} USB port(s): ${availablePorts.join(", ")}`
   );
   for (const portPath of availablePorts) {
-    console.log(`Testing ${portPath}...`);
-    const hasValidSensor = await testPort(portPath);
+    console.log(`Testing ${portPath} at 115200 baud...`);
+    const hasValidSensor = await testPort(portPath, 115200);
     if (hasValidSensor) {
-      console.log(`\u2705 Sensor detected on ${portPath}`);
+      console.log(`\u2705 Sensor detected on ${portPath} at 115200 baud`);
       return portPath;
+    }
+  }
+  console.log(
+    "No sensor found at 115200 baud. Trying 9600 baud for configuration..."
+  );
+  for (const portPath of availablePorts) {
+    console.log(`Testing ${portPath} at 9600 baud...`);
+    const hasValidSensor = await testPort(portPath, 9600);
+    if (hasValidSensor) {
+      console.log(
+        `\u2705 Sensor detected on ${portPath} at 9600 baud. Configuring...`
+      );
+      try {
+        const configPort = new import_serialport.SerialPort({
+          path: portPath,
+          baudRate: 9600
+        });
+        await new Promise((resolve) => {
+          configPort.on("open", async () => {
+            console.log(`Connected to ${portPath} for configuration`);
+            const success = await configureSensor(configPort);
+            configPort.close();
+            if (success) {
+              console.log(
+                "Configuration complete. Waiting for sensor at 115200 baud..."
+              );
+              setTimeout(resolve, 2e3);
+            } else {
+              resolve();
+            }
+          });
+          configPort.on("error", () => {
+            console.error(`Failed to open ${portPath} for configuration`);
+            resolve();
+          });
+        });
+        console.log(
+          "Re-scanning ports for configured sensor at 115200 baud..."
+        );
+        for (const retryPort of availablePorts) {
+          console.log(`Re-testing ${retryPort} at 115200 baud...`);
+          const configuredSensor = await testPort(retryPort, 115200);
+          if (configuredSensor) {
+            console.log(`\u2705 Configured sensor detected on ${retryPort}`);
+            return retryPort;
+          }
+        }
+        console.warn(
+          "Sensor was configured but not detected at 115200. Retrying full detection..."
+        );
+        return null;
+      } catch (error) {
+        console.error(`Failed to configure sensor: ${error.message}`);
+      }
     }
   }
   console.warn("No inclination sensor detected. Retrying in 5 seconds...");
   return null;
 }
+var count = 0;
+var maxAcc = 0;
+var avrAcc = 0;
 async function connectToSensor() {
   const detectedPort = await detectSensorPort();
   if (!detectedPort) {
@@ -22601,7 +22721,7 @@ async function connectToSensor() {
   try {
     port = new import_serialport.SerialPort({
       path: detectedPort,
-      baudRate: 9600
+      baudRate: 115200
     });
     parser = port.pipe(new InclinationParser());
     port.on("open", () => {
@@ -22611,8 +22731,18 @@ async function connectToSensor() {
       io2.emit("status", { connected: true, port: detectedPort });
     });
     parser.on("data", (data) => {
-      latestData = data;
-      io2.emit("inclination", data);
+      const { accX, accY, accZ } = data;
+      const magAcc = Math.sqrt(accX ** 2 + accY ** 2 + accZ ** 2);
+      maxAcc = Math.max(magAcc, maxAcc);
+      avrAcc = magAcc + avrAcc;
+      count++;
+      if (count >= 20) {
+        const payload = { ...data, maxAcc, avrAcc: avrAcc / 20 };
+        io2.emit("inclination", payload);
+        maxAcc = 0;
+        avrAcc = 0;
+        count = 0;
+      }
     });
     port.on("error", (error) => {
       console.error(`Port error: ${error.message}`);
@@ -22649,13 +22779,6 @@ function handleDisconnect() {
     setTimeout(connectToSensor, RECONNECT_DELAY);
   }
 }
-setInterval(() => {
-  if (latestData && isConnected) {
-    console.log(
-      `Roll: ${latestData.roll.toFixed(2)}\xB0, Pitch: ${latestData.pitch.toFixed(2)}\xB0, Yaw: ${latestData.yaw.toFixed(2)}\xB0`
-    );
-  }
-}, 5e3);
 console.log("Inclination sensor server starting on port 10001");
 connectToSensor();
 /*! Bundled license information:

@@ -38,16 +38,70 @@ async function listSerialPorts() {
 }
 
 /**
+ * Send command to WIT sensor
+ */
+async function sendCommand(serialPort, command) {
+  return new Promise((resolve, reject) => {
+    if (!serialPort || !serialPort.isOpen) {
+      reject(new Error("Port not open"));
+      return;
+    }
+    serialPort.write(command, (err) => {
+      if (err) reject(err);
+      else {
+        setTimeout(() => resolve(), 100);
+      }
+    });
+  });
+}
+
+/**
+ * Configure sensor for 100Hz output with acceleration and inclination
+ */
+async function configureSensor(serialPort) {
+  try {
+    console.log(
+      "Configuring sensor for 100Hz acceleration + inclination output...",
+    );
+
+    // Unlock sensor
+    await sendCommand(serialPort, Buffer.from([0xff, 0xaa, 0x69, 0x88, 0xb5]));
+    console.log("✓ Sensor unlocked");
+
+    // Set output rate to 100Hz (register 0x03, value 0x09 = 100Hz)
+    await sendCommand(serialPort, Buffer.from([0xff, 0xaa, 0x03, 0x09, 0x00]));
+    console.log("✓ Output rate set to 100Hz");
+
+    // Configure output content: acceleration + inclination (0x0a = ACC|ANG)
+    // Register 0x02: bit 1=ANG, bit 3=ACC
+    await sendCommand(serialPort, Buffer.from([0xff, 0xaa, 0x02, 0x0a, 0x00]));
+    console.log("✓ Output content set to acceleration + inclination");
+
+    // Set baud rate to 115200 (register 0x04, value 0x06 = 115200)
+    await sendCommand(serialPort, Buffer.from([0xff, 0xaa, 0x04, 0x06, 0x00]));
+    console.log("✓ Baud rate set to 115200");
+
+    // Save configuration
+    await sendCommand(serialPort, Buffer.from([0xff, 0xaa, 0x00, 0x00, 0x00]));
+    console.log("✓ Configuration saved");
+    return true;
+  } catch (error) {
+    console.error("✗ Configuration error:", error.message);
+    return false;
+  }
+}
+
+/**
  * Test if a port has the inclination sensor by checking for valid packets
  */
-async function testPort(portPath) {
+async function testPort(portPath, baudRate = 115200) {
   return new Promise((resolve) => {
     let testPort;
     let timeoutId;
     let packetReceived = false;
 
     try {
-      testPort = new SerialPort({ path: portPath, baudRate: 115200 });
+      testPort = new SerialPort({ path: portPath, baudRate });
 
       timeoutId = setTimeout(() => {
         if (testPort && testPort.isOpen) {
@@ -83,7 +137,7 @@ async function testPort(portPath) {
  * Auto-detect the correct USB port with the sensor
  */
 async function detectSensorPort() {
-  console.log("Detecting inclination sensor...");
+  console.log("Detecting inclination sensor at 115200 baud...");
   const availablePorts = await listSerialPorts();
 
   if (availablePorts.length === 0) {
@@ -95,12 +149,80 @@ async function detectSensorPort() {
     `Found ${availablePorts.length} USB port(s): ${availablePorts.join(", ")}`,
   );
 
+  // First, try to find sensor at 115200 baud
   for (const portPath of availablePorts) {
-    console.log(`Testing ${portPath}...`);
-    const hasValidSensor = await testPort(portPath);
+    console.log(`Testing ${portPath} at 115200 baud...`);
+    const hasValidSensor = await testPort(portPath, 115200);
     if (hasValidSensor) {
-      console.log(`✅ Sensor detected on ${portPath}`);
+      console.log(`✅ Sensor detected on ${portPath} at 115200 baud`);
       return portPath;
+    }
+  }
+
+  console.log(
+    "No sensor found at 115200 baud. Trying 9600 baud for configuration...",
+  );
+
+  // Try to find sensor at 9600 baud for configuration
+  for (const portPath of availablePorts) {
+    console.log(`Testing ${portPath} at 9600 baud...`);
+    const hasValidSensor = await testPort(portPath, 9600);
+    if (hasValidSensor) {
+      console.log(
+        `✅ Sensor detected on ${portPath} at 9600 baud. Configuring...`,
+      );
+
+      // Open port and configure
+      try {
+        const configPort = new SerialPort({
+          path: portPath,
+          baudRate: 9600,
+        });
+
+        await new Promise((resolve) => {
+          configPort.on("open", async () => {
+            console.log(`Connected to ${portPath} for configuration`);
+            const success = await configureSensor(configPort);
+
+            // Close port after configuration
+            configPort.close();
+            if (success) {
+              console.log(
+                "Configuration complete. Waiting for sensor at 115200 baud...",
+              );
+              // Wait a bit for sensor to restart with new baud rate
+              setTimeout(resolve, 2000);
+            } else {
+              resolve();
+            }
+          });
+
+          configPort.on("error", () => {
+            console.error(`Failed to open ${portPath} for configuration`);
+            resolve();
+          });
+        });
+
+        // Now re-scan for the sensor at 115200 baud after configuration
+        console.log(
+          "Re-scanning ports for configured sensor at 115200 baud...",
+        );
+        for (const retryPort of availablePorts) {
+          console.log(`Re-testing ${retryPort} at 115200 baud...`);
+          const configuredSensor = await testPort(retryPort, 115200);
+          if (configuredSensor) {
+            console.log(`✅ Configured sensor detected on ${retryPort}`);
+            return retryPort;
+          }
+        }
+
+        console.warn(
+          "Sensor was configured but not detected at 115200. Retrying full detection...",
+        );
+        return null;
+      } catch (error) {
+        console.error(`Failed to configure sensor: ${error.message}`);
+      }
     }
   }
 

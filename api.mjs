@@ -1,3 +1,4 @@
+import { execFile } from "node:child_process";
 import { SerialPort } from "serialport";
 import { InclinationParser } from "./inclination.js";
 import { createServer } from "http";
@@ -9,6 +10,54 @@ const io = new Server(server, {
     origin: "*",
     methods: ["GET", "POST"],
   },
+});
+
+const MAX_LOGS = 100;
+let recentLogs = [];
+let currentDevices = [];
+
+function serializeLogArgument(value) {
+  if (typeof value === "string") return value;
+  if (value instanceof Error) return value.stack || value.message;
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+const originalConsole = {
+  log: console.log.bind(console),
+  info: console.info.bind(console),
+  warn: console.warn.bind(console),
+  error: console.error.bind(console),
+  debug: console.debug.bind(console),
+};
+
+function broadcastLog(level, ...args) {
+  const message = args.map(serializeLogArgument).join(" ");
+  const entry = {
+    level,
+    message,
+    timestamp: new Date().toISOString(),
+  };
+  recentLogs.push(entry);
+  if (recentLogs.length > MAX_LOGS) {
+    recentLogs.shift();
+  }
+  io.emit("logs", entry);
+  originalConsole[level](...args);
+}
+
+console.log = (...args) => broadcastLog("log", ...args);
+console.info = (...args) => broadcastLog("info", ...args);
+console.warn = (...args) => broadcastLog("warn", ...args);
+console.error = (...args) => broadcastLog("error", ...args);
+console.debug = (...args) => broadcastLog("debug", ...args);
+
+io.on("connection", (socket) => {
+  socket.emit("devices", currentDevices);
+  socket.emit("logs", recentLogs);
 });
 
 server.listen(10001);
@@ -237,6 +286,39 @@ async function detectSensorPort() {
 let count = 0;
 let maxAcc = 0;
 let avrAcc = 0;
+
+function refreshUsbDevices() {
+  return new Promise((resolve) => {
+    execFile("lsusb", [], { encoding: "utf8" }, (error, stdout) => {
+      if (error) {
+        currentDevices = [];
+        io.emit("devices", []);
+        console.error(`Unable to query lsusb: ${error.message}`);
+        resolve();
+        return;
+      }
+
+      const devices = stdout
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean);
+      currentDevices = devices;
+      io.emit("devices", devices);
+      resolve();
+    });
+  });
+}
+
+setInterval(() => {
+  refreshUsbDevices().catch((error) => {
+    console.error(`USB refresh failed: ${error.message}`);
+  });
+}, 5000);
+
+refreshUsbDevices().catch((error) => {
+  console.error(`Initial USB refresh failed: ${error.message}`);
+});
+
 async function connectToSensor() {
   const detectedPort = await detectSensorPort();
 
